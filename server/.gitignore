@@ -1,0 +1,26 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+.venv/
+venv/
+**pycache**/
+__pycache__/
+*.pyc
+
+dist/
+build/
+
+*.log
+
+# Large/generated datasets
+
+# server/practice/myntra_products.csv
+# server/practice/stylesense_products.csv
+# server/practice/stylesense_products_100k.csv
+# server/practice/interactions.csv
+# server/practice/interactions_clean.csv
+# server/practice/stylesense_products_100k_old.csv
+practice/*.csv
+recomendationSystem/*.csv
