@@ -27,15 +27,7 @@ ENV_FILE = os.path.join(
 
 load_dotenv(ENV_FILE)
 
-PRODUCT_FILE = os.path.join(
-    BASE_DIR,
-    "stylesense_products_clean.csv"
-)
 
-INTERACTION_FILE = os.path.join(
-    BASE_DIR,
-    "stylesense_interactions_clean.csv"
-)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -48,34 +40,115 @@ RECENCY_HALF_LIFE_DAYS = 14
 
 
 # ============================================================
-# LOAD PRODUCTS
+# LOAD PRODUCTS FROM NEON
 # ============================================================
 
-print(
-    "Loading product dataset...",
-    file=sys.stderr
-)
+def load_products_from_neon():
 
-PRODUCTS_DF = pd.read_csv(
-    PRODUCT_FILE,
-    low_memory=False
-)
+    if not DATABASE_URL:
 
-PRODUCTS_DF.columns = (
-    PRODUCTS_DF.columns
-    .str.strip()
-)
+        print(
+            "DATABASE_URL not found",
+            file=sys.stderr
+        )
 
-PRODUCTS_DF["id"] = (
-    PRODUCTS_DF["id"]
+        return pd.DataFrame()
+
+    conn = None
+
+    try:
+
+        print(
+            "Loading products from Neon...",
+            file=sys.stderr
+        )
+
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            connect_timeout=10
+        )
+
+        query = """
+            SELECT
+                id,
+                name,
+                image_url,
+                price,
+                mrp,
+                rating,
+                "ratingTotal",
+                discount,
+                calculated_discount,
+                popularity_score,
+                seller,
+                gender,
+                category,
+                subcategory,
+                color,
+                fit,
+                style,
+                purl
+            FROM products
+        """
+
+        df = pd.read_sql_query(
+            query,
+            conn
+        )
+
+        df["id"] = (
+            df["id"]
+            .astype(str)
+        )
+
+        df.columns = (
+            df.columns
+            .str.strip()
+        )
+
+        print(
+            f"Loaded {len(df)} products from Neon",
+            file=sys.stderr
+        )
+
+        return df
+
+    except Exception as e:
+
+        print(
+            f"Error loading products from Neon: {e}",
+            file=sys.stderr
+        )
+
+        return pd.DataFrame()
+
+    finally:
+
+        if conn:
+            conn.close()
+
+
+PRODUCTS_DF = load_products_from_neon()
+# Prepare search data once
+PRODUCTS_DF["_name_words"] = (
+    PRODUCTS_DF["name"]
+    .fillna("")
     .astype(str)
+    .str.lower()
+    .str.split()
 )
 
-print(
-    f"Loaded {len(PRODUCTS_DF)} products",
-    file=sys.stderr
-)
-
+PRODUCT_ATTRIBUTES = PRODUCTS_DF[
+    [
+        "id",
+        "gender",
+        "category",
+        "subcategory",
+        "color",
+        "fit",
+        "style"
+    ]
+].copy()
 
 # ============================================================
 # NORMALIZE SCORE
@@ -344,17 +417,7 @@ def build_user_profile(interactions):
     # PRODUCT ATTRIBUTES
     # --------------------------------------------------------
 
-    product_attributes = PRODUCTS_DF[
-        [
-            "id",
-            "gender",
-            "category",
-            "subcategory",
-            "color",
-            "fit",
-            "style"
-        ]
-    ].copy()
+    product_attributes = PRODUCT_ATTRIBUTES
 
     product_attributes["id"] = (
         product_attributes["id"]
@@ -444,7 +507,14 @@ def build_user_profile(interactions):
     # --------------------------------------------------------
     # BUILD ATTRIBUTE PREFERENCES
     # --------------------------------------------------------
+    for attribute in profile.keys():
 
+        merged[attribute] = (
+            merged[attribute]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
     attributes = [
 
         ("gender", 1),
@@ -688,21 +758,75 @@ def generate_recommendation_reason(
     )
 
 
-# ============================================================
-# CSV POPULARITY
-# ============================================================
-
 @lru_cache(maxsize=1)
-def calculate_csv_popularity():
+def calculate_neon_popularity():
 
     print(
-        "Calculating popularity...",
+        "Calculating popularity from Neon...",
         file=sys.stderr
     )
 
-    if not os.path.exists(
-        INTERACTION_FILE
-    ):
+    if not DATABASE_URL:
+        return pd.DataFrame(
+            columns=[
+                "product_id",
+                "popularity_score"
+            ]
+        )
+
+    conn = None
+
+    try:
+
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            connect_timeout=10
+        )
+
+        query = """
+            SELECT
+                product_id,
+                SUM(
+                    CASE interaction_type
+                        WHEN 'view' THEN 1
+                        WHEN 'click' THEN 2
+                        WHEN 'add_to_wishlist' THEN 5
+                        WHEN 'add_to_cart' THEN 7
+                        WHEN 'remove_from_wishlist' THEN -4
+                        WHEN 'remove_from_cart' THEN -5
+                        ELSE 0
+                    END
+                ) AS popularity_score
+            FROM interactions
+            GROUP BY product_id
+        """
+
+        popularity = pd.read_sql_query(
+            query,
+            conn
+        )
+
+        popularity["product_id"] = (
+            popularity["product_id"]
+            .astype(str)
+        )
+
+        popularity["popularity_score"] = (
+            pd.to_numeric(
+                popularity["popularity_score"],
+                errors="coerce"
+            )
+            .fillna(0)
+        )
+
+        return popularity
+
+    except Exception as e:
+
+        print(
+            f"Error calculating Neon popularity: {e}",
+            file=sys.stderr
+        )
 
         return pd.DataFrame(
             columns=[
@@ -711,48 +835,10 @@ def calculate_csv_popularity():
             ]
         )
 
-    interactions = pd.read_csv(
-        INTERACTION_FILE,
-        low_memory=False
-    )
+    finally:
 
-    if interactions.empty:
-
-        return pd.DataFrame(
-            columns=[
-                "product_id",
-                "popularity_score"
-            ]
-        )
-
-    interactions["product_id"] = (
-        interactions["product_id"]
-        .astype(str)
-    )
-
-    interactions["interaction_score"] = (
-        interactions["interaction_type"]
-        .map(INTERACTION_WEIGHTS)
-        .fillna(0)
-    )
-
-    popularity = (
-
-        interactions
-        .groupby("product_id")
-        ["interaction_score"]
-        .sum()
-        .reset_index()
-    )
-
-    popularity.columns = [
-
-        "product_id",
-
-        "popularity_score"
-    ]
-
-    return popularity
+        if conn:
+            conn.close()
 
 
 # ============================================================
@@ -764,7 +850,7 @@ def add_popularity_score(result):
     result = result.copy()
 
     popularity = (
-        calculate_csv_popularity()
+        calculate_neon_popularity()
     )
 
     if popularity.empty:
@@ -863,14 +949,11 @@ def add_rating_score(result):
 
 
 
-# ============================================================
-# MAIN SEARCH + PERSONALIZATION
-# ============================================================
-
 def combined_search(
     query,
     user_id=None,
     limit=50,
+    filters=None
 ):
 
     print(
@@ -878,33 +961,26 @@ def combined_search(
         file=sys.stderr
     )
 
+    if filters is None:
+        filters = {}
+
+
+    SEARCH_LIMIT = 200
     # ========================================================
     # 1. SEARCH
     # ========================================================
-
     search_result = search_products(
-        query
+        query,
+        PRODUCTS_DF,
+        limit=SEARCH_LIMIT
     )
-    
-    if search_result is None:
 
+    if search_result is None:
         return pd.DataFrame()
 
-    if isinstance(
-        search_result,
-        list
-    ):
-
-        result = pd.DataFrame(
-            search_result
-        )
-
-    else:
-
-        result = search_result.copy()
+    result = search_result.copy()
 
     if result.empty:
-
         return result
 
     print(
@@ -913,7 +989,202 @@ def combined_search(
     )
 
     # ========================================================
-    # 2. TOP CANDIDATES
+    # 2. APPLY FILTERS
+    # ========================================================
+
+    if filters:
+
+        print(
+            f"Applying filters: {filters}",
+            file=sys.stderr
+        )
+
+        # -------------------------
+        # Gender
+        # -------------------------
+
+        gender = filters.get("gender")
+
+        if gender and "gender" in result.columns:
+
+            result = result[
+                result["gender"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == str(gender).strip().lower()
+            ]
+
+        # -------------------------
+        # Category
+        # -------------------------
+
+        category = filters.get("category")
+
+        if category and "category" in result.columns:
+
+            result = result[
+                result["category"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == str(category).strip().lower()
+            ]
+
+        # -------------------------
+        # Subcategory
+        # -------------------------
+
+        subcategory = filters.get("subcategory")
+
+        if subcategory and "subcategory" in result.columns:
+
+            result = result[
+                result["subcategory"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == str(subcategory).strip().lower()
+            ]
+
+        # -------------------------
+        # Color
+        # -------------------------
+
+        color = filters.get("color")
+
+        if color and "color" in result.columns:
+
+            result = result[
+                result["color"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == str(color).strip().lower()
+            ]
+
+        # -------------------------
+        # Fit
+        # -------------------------
+
+        fit = filters.get("fit")
+
+        if fit and "fit" in result.columns:
+
+            result = result[
+                result["fit"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == str(fit).strip().lower()
+            ]
+
+        # -------------------------
+        # Style
+        # -------------------------
+
+        style = filters.get("style")
+
+        if style and "style" in result.columns:
+
+            result = result[
+                result["style"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                == str(style).strip().lower()
+            ]
+
+        # -------------------------
+        # Minimum Price
+        # -------------------------
+
+        min_price = filters.get("min_price")
+
+        if (
+            min_price is not None
+            and "price" in result.columns
+        ):
+
+            result["price"] = pd.to_numeric(
+                result["price"],
+                errors="coerce"
+            )
+
+            result = result[
+                result["price"] >= float(min_price)
+            ]
+
+        # -------------------------
+        # Maximum Price
+        # -------------------------
+
+        max_price = filters.get("max_price")
+
+        if (
+            max_price is not None
+            and "price" in result.columns
+        ):
+
+            result["price"] = pd.to_numeric(
+                result["price"],
+                errors="coerce"
+            )
+
+            result = result[
+                result["price"] <= float(max_price)
+            ]
+
+        # -------------------------
+        # Minimum Rating
+        # -------------------------
+
+        min_rating = filters.get("min_rating")
+
+        if (
+            min_rating is not None
+            and "rating" in result.columns
+        ):
+
+            result["rating"] = pd.to_numeric(
+                result["rating"],
+                errors="coerce"
+            )
+
+            result = result[
+                result["rating"] >= float(min_rating)
+            ]
+
+        # -------------------------
+        # Minimum Discount
+        # -------------------------
+
+        min_discount = filters.get("min_discount")
+
+        if (
+            min_discount is not None
+            and "discount" in result.columns
+        ):
+
+            result["discount"] = pd.to_numeric(
+                result["discount"],
+                errors="coerce"
+            )
+
+            result = result[
+                result["discount"] >= float(min_discount)
+            ]
+
+    print(
+        f"Candidates after filters: {len(result)}",
+        file=sys.stderr
+    )
+
+    if result.empty:
+        return result
+
+    # ========================================================
+    # 3. TOP CANDIDATES
     # ========================================================
 
     result = result.head(
@@ -921,7 +1192,7 @@ def combined_search(
     ).copy()
 
     # ========================================================
-    # 3. USER HISTORY
+    # 4. USER HISTORY
     # ========================================================
 
     interactions = (
@@ -940,7 +1211,7 @@ def combined_search(
     )
 
     # ========================================================
-    # 4. PERSONALIZATION
+    # 5. PERSONALIZATION
     # ========================================================
 
     if has_history:
@@ -1017,7 +1288,7 @@ def combined_search(
         )
 
     # ========================================================
-    # 5. POPULARITY
+    # 6. POPULARITY
     # ========================================================
 
     result = add_popularity_score(
@@ -1025,7 +1296,7 @@ def combined_search(
     )
 
     # ========================================================
-    # 6. RATING
+    # 7. RATING
     # ========================================================
 
     result = add_rating_score(
@@ -1033,7 +1304,7 @@ def combined_search(
     )
 
     # ========================================================
-    # 7. SEARCH SCORE
+    # 8. SEARCH SCORE
     # ========================================================
 
     if "search_score" in result.columns:
@@ -1058,7 +1329,7 @@ def combined_search(
         ] = 0
 
     # ========================================================
-    # 8. FINAL RANKING
+    # 9. FINAL RANKING
     # ========================================================
 
     if has_history:
@@ -1109,38 +1380,14 @@ def combined_search(
             ] * 0.10
         )
 
+    # ========================================================
+    # 10. FINAL SORT + LIMIT
+    # ========================================================
 
-
-    sort = (filters or {}).get("sort")
-
-    if sort == "price_low" and "price" in result.columns:
-
-        result = result.sort_values(
-            "price",
-            ascending=True
-        )
-
-    elif sort == "price_high" and "price" in result.columns:
-
-        result = result.sort_values(
-            "price",
-            ascending=False
-        )
-
-    elif sort == "rating" and "rating" in result.columns:
-
-        result = result.sort_values(
-            "rating",
-            ascending=False
-        )
-
-    else:
-
-        # Default = intelligent StyleSense ranking
-        result = result.sort_values(
-            "final_score",
-            ascending=False
-        )
+    result = result.sort_values(
+        "final_score",
+        ascending=False
+    )
 
     result = (
         result
@@ -1199,6 +1446,11 @@ if __name__ == "__main__":
             )
         )
 
+        filters = data.get(
+            "filters",
+            {}
+        )
+
         if not query:
 
             print(
@@ -1214,7 +1466,8 @@ if __name__ == "__main__":
         results = combined_search(
             query=query,
             user_id=user_id,
-            limit=limit
+            limit=limit,
+            filters=filters
         )
 
         if results is None:

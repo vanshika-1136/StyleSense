@@ -7,7 +7,7 @@ const pool = require("../db/db");
 const PRODUCT_FILE = path.join(
 __dirname,
 "..",
-"recomendationSystem",
+"data",
 "stylesense_products_clean.csv"
 );
 

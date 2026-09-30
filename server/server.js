@@ -10,9 +10,7 @@ const recommendationRoutes =
     const searchHistoryRoutes =
     require("./routes/searchHistoryRoutes");
     const authRoutes = require("./routes/authRoutes");
-// const {
-//     loadProducts
-// } = require("./practice/services/preferenceEngine");
+
 
 
 const app = express();
@@ -67,7 +65,7 @@ app.use(
 // START SERVER
 // ========================================
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 
 const startServer = async () => {

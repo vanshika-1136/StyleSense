@@ -1,36 +1,5 @@
 import pandas as pd
 import re
-import sys
-import json
-import os
-
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-BASE_DIR = os.path.dirname(
-    os.path.abspath(__file__)
-)
-
-PRODUCT_FILE = os.path.join(
-    BASE_DIR,
-    "stylesense_products_clean.csv"
-)
-
-
-# ============================================================
-# LOAD PRODUCTS
-# ============================================================
-
-products = pd.read_csv(
-    PRODUCT_FILE,
-    low_memory=False
-)
-
-products.columns = products.columns.str.strip()
-
-products["id"] = products["id"].astype(str)
 
 
 # ============================================================
@@ -58,49 +27,6 @@ def normalize_text(value):
 
     return value
 
-
-TEXT_COLUMNS = [
-    "name",
-    "gender",
-    "category",
-    "subcategory",
-    "color",
-    "fit",
-    "style"
-]
-
-
-for column in TEXT_COLUMNS:
-
-    if column in products.columns:
-
-        products[column] = (
-            products[column]
-            .fillna("")
-            .astype(str)
-            .map(normalize_text)
-        )
-
-
-# ============================================================
-# PRE-COMPUTE WORD SETS
-# ============================================================
-
-# This avoids repeatedly doing .split() during every search.
-
-for column in TEXT_COLUMNS:
-
-    if column in products.columns:
-
-        products[f"_{column}_words"] = (
-            products[column]
-            .str.split()
-        )
-
-
-# ============================================================
-# STOP WORDS
-# ============================================================
 
 STOP_WORDS = {
     "a",
@@ -139,29 +65,65 @@ def tokenize(query):
 
 
 # ============================================================
+# PREPARE SEARCH DATA
+# ============================================================
+
+def prepare_search_data(products):
+
+    products = products.copy()
+
+    text_columns = [
+        "name",
+        "gender",
+        "category",
+        "subcategory",
+        "color",
+        "fit",
+        "style"
+    ]
+
+    for column in text_columns:
+
+        if column in products.columns:
+
+            products[column] = (
+                products[column]
+                .fillna("")
+                .astype(str)
+                .map(normalize_text)
+            )
+
+    # Pre-compute words only once
+    products["_name_words"] = (
+        products["name"]
+        .str.split()
+    )
+
+    return products
+
+
+# ============================================================
 # FAST SEARCH
 # ============================================================
 
-def search_products(query, limit=100):
+def search_products(
+    query,
+    products,
+    limit=100
+):
+
+    if products.empty:
+        return pd.DataFrame()
 
     query = query.strip()
-
-    # --------------------------------------------------------
-    # NO QUERY
-    # --------------------------------------------------------
 
     if not query:
 
         result = products.head(limit).copy()
 
-        result["search_score"] = 0
+        result["search_score"] = 0.0
 
         return result
-
-
-    # --------------------------------------------------------
-    # TOKENS
-    # --------------------------------------------------------
 
     tokens = tokenize(query)
 
@@ -169,31 +131,22 @@ def search_products(query, limit=100):
 
         result = products.head(limit).copy()
 
-        result["search_score"] = 0
+        result["search_score"] = 0.0
 
         return result
-
-
-    # --------------------------------------------------------
-    # SEARCH SCORE
-    # --------------------------------------------------------
 
     scores = pd.Series(
         0.0,
         index=products.index
     )
 
-
-    # ========================================================
-    # EACH TOKEN
-    # ========================================================
+    # --------------------------------------------------------
+    # SEARCH EACH TOKEN
+    # --------------------------------------------------------
 
     for token in tokens:
 
-        # ----------------------------------------------------
         # NAME
-        # ----------------------------------------------------
-
         name_contains = (
             products["name"]
             .str.contains(
@@ -203,138 +156,113 @@ def search_products(query, limit=100):
             )
         )
 
-        scores += name_contains.astype(float) * 10
-
-
-        # Exact word in name
-        name_exact = (
-            products["_name_words"]
-            .map(
-                lambda words:
-                token in words
-            )
+        scores += (
+            name_contains.astype(float) * 10
         )
 
-        scores += name_exact.astype(float) * 5
+        # Exact word in name
+        name_exact = products["_name_words"].map(
+            lambda words: token in words
+        )
 
+        scores += (
+            name_exact.astype(float) * 5
+        )
 
-        # ----------------------------------------------------
         # CATEGORY
-        # ----------------------------------------------------
-
-        category_match = (
+        scores += (
             products["category"]
             .str.contains(
                 token,
                 regex=False,
                 na=False
             )
+            .astype(float)
+            * 8
         )
 
-        scores += category_match.astype(float) * 8
-
-
-        # ----------------------------------------------------
         # SUBCATEGORY
-        # ----------------------------------------------------
-
-        subcategory_match = (
+        scores += (
             products["subcategory"]
             .str.contains(
                 token,
                 regex=False,
                 na=False
             )
+            .astype(float)
+            * 7
         )
 
-        scores += subcategory_match.astype(float) * 7
-
-
-        # ----------------------------------------------------
         # COLOR
-        # ----------------------------------------------------
-
-        color_match = (
+        scores += (
             products["color"]
             .str.contains(
                 token,
                 regex=False,
                 na=False
             )
+            .astype(float)
+            * 7
         )
 
-        scores += color_match.astype(float) * 7
-
-
-        # ----------------------------------------------------
         # STYLE
-        # ----------------------------------------------------
-
-        style_match = (
+        scores += (
             products["style"]
             .str.contains(
                 token,
                 regex=False,
                 na=False
             )
+            .astype(float)
+            * 5
         )
 
-        scores += style_match.astype(float) * 5
-
-
-        # ----------------------------------------------------
         # GENDER
-        # ----------------------------------------------------
-
-        gender_match = (
+        scores += (
             products["gender"]
             .str.contains(
                 token,
                 regex=False,
                 na=False
             )
+            .astype(float)
+            * 3
         )
 
-        scores += gender_match.astype(float) * 3
-
-
-        # ----------------------------------------------------
         # FIT
-        # ----------------------------------------------------
-
-        fit_match = (
+        scores += (
             products["fit"]
             .str.contains(
                 token,
                 regex=False,
                 na=False
             )
+            .astype(float)
+            * 3
         )
 
-        scores += fit_match.astype(float) * 3
-
-
-    # ========================================================
+    # --------------------------------------------------------
     # ATTACH SCORE
-    # ========================================================
+    # --------------------------------------------------------
 
     result = products.copy()
 
     result["search_score"] = scores
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # REMOVE NON-MATCHES
-    # ========================================================
+    # --------------------------------------------------------
 
     result = result[
         result["search_score"] > 0
     ]
 
+    if result.empty:
+        return result
 
-    # ========================================================
+    # --------------------------------------------------------
     # SORT
-    # ========================================================
+    # --------------------------------------------------------
 
     result = result.sort_values(
         by="search_score",
@@ -342,101 +270,446 @@ def search_products(query, limit=100):
         kind="stable"
     )
 
-
-    # ========================================================
-    # RETURN ONLY REQUIRED PRODUCTS
-    # ========================================================
-
     return result.head(limit)
+# import pandas as pd
+# import re
+# import sys
+# import json
+# import os
 
 
-# ============================================================
-# CLI
-# ============================================================
+# # ============================================================
+# # CONFIG
+# # ============================================================
 
-if __name__ == "__main__":
+# # BASE_DIR = os.path.dirname(
+# #     os.path.abspath(__file__)
+# # )
 
-    try:
-
-        # ----------------------------------------------------
-        # READ JSON FROM NODE
-        # ----------------------------------------------------
-
-        input_data = sys.stdin.read()
-
-        if input_data.strip():
-
-            data = json.loads(input_data)
-
-            query = data.get(
-                "query",
-                ""
-            )
-
-        else:
-
-            query = ""
+# # PRODUCT_FILE = os.path.join(
+# #     BASE_DIR,
+# #     "stylesense_products_clean.csv"
+# # )
 
 
-        # ----------------------------------------------------
-        # SEARCH
-        # ----------------------------------------------------
+# # ============================================================
+# # LOAD PRODUCTS
+# # ============================================================
 
-        results = search_products(
-            query
-        )
+# products = pd.read_csv(
+#     PRODUCT_FILE,
+#     low_memory=False
+# )
 
+# products.columns = products.columns.str.strip()
 
-        # ----------------------------------------------------
-        # REMOVE HELPER COLUMNS
-        # ----------------------------------------------------
-
-        helper_columns = [
-            column
-            for column in results.columns
-            if column.startswith("_")
-        ]
-
-        results = results.drop(
-            columns=helper_columns,
-            errors="ignore"
-        )
+# products["id"] = products["id"].astype(str)
 
 
-        # ----------------------------------------------------
-        # CLEAN NaN
-        # ----------------------------------------------------
+# # ============================================================
+# # NORMALIZATION
+# # ============================================================
 
-        results = results.fillna("")
+# def normalize_text(value):
+
+#     if pd.isna(value):
+#         return ""
+
+#     value = str(value).lower().strip()
+
+#     value = re.sub(
+#         r"[^a-z0-9\s]",
+#         " ",
+#         value
+#     )
+
+#     value = re.sub(
+#         r"\s+",
+#         " ",
+#         value
+#     )
+
+#     return value
 
 
-        # ----------------------------------------------------
-        # RETURN JSON
-        # ----------------------------------------------------
-
-        print(
-            json.dumps(
-                {
-                    "success": True,
-                    "count": len(results),
-                    "products": results.to_dict(
-                        orient="records"
-                    )
-                },
-                default=str
-            )
-        )
+# TEXT_COLUMNS = [
+#     "name",
+#     "gender",
+#     "category",
+#     "subcategory",
+#     "color",
+#     "fit",
+#     "style"
+# ]
 
 
-    except Exception as error:
+# for column in TEXT_COLUMNS:
 
-        print(
-            json.dumps(
-                {
-                    "success": False,
-                    "error": str(error)
-                }
-            )
-        )
+#     if column in products.columns:
 
-        sys.exit(1)
+#         products[column] = (
+#             products[column]
+#             .fillna("")
+#             .astype(str)
+#             .map(normalize_text)
+#         )
+
+
+# # ============================================================
+# # PRE-COMPUTE WORD SETS
+# # ============================================================
+
+# # This avoids repeatedly doing .split() during every search.
+
+# for column in TEXT_COLUMNS:
+
+#     if column in products.columns:
+
+#         products[f"_{column}_words"] = (
+#             products[column]
+#             .str.split()
+#         )
+
+
+# # ============================================================
+# # STOP WORDS
+# # ============================================================
+
+# STOP_WORDS = {
+#     "a",
+#     "an",
+#     "the",
+#     "for",
+#     "with",
+#     "and",
+#     "or",
+#     "of",
+#     "in",
+#     "on",
+#     "to",
+#     "is",
+#     "me",
+#     "show",
+#     "find",
+#     "want",
+#     "looking"
+# }
+
+
+# # ============================================================
+# # TOKENIZATION
+# # ============================================================
+
+# def tokenize(query):
+
+#     query = normalize_text(query)
+
+#     return [
+#         word
+#         for word in query.split()
+#         if word not in STOP_WORDS
+#     ]
+
+
+# # ============================================================
+# # FAST SEARCH
+# # ============================================================
+
+# def search_products(query, limit=100):
+
+#     query = query.strip()
+
+#     # --------------------------------------------------------
+#     # NO QUERY
+#     # --------------------------------------------------------
+
+#     if not query:
+
+#         result = products.head(limit).copy()
+
+#         result["search_score"] = 0
+
+#         return result
+
+
+#     # --------------------------------------------------------
+#     # TOKENS
+#     # --------------------------------------------------------
+
+#     tokens = tokenize(query)
+
+#     if not tokens:
+
+#         result = products.head(limit).copy()
+
+#         result["search_score"] = 0
+
+#         return result
+
+
+#     # --------------------------------------------------------
+#     # SEARCH SCORE
+#     # --------------------------------------------------------
+
+#     scores = pd.Series(
+#         0.0,
+#         index=products.index
+#     )
+
+
+#     # ========================================================
+#     # EACH TOKEN
+#     # ========================================================
+
+#     for token in tokens:
+
+#         # ----------------------------------------------------
+#         # NAME
+#         # ----------------------------------------------------
+
+#         name_contains = (
+#             products["name"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += name_contains.astype(float) * 10
+
+
+#         # Exact word in name
+#         name_exact = (
+#             products["_name_words"]
+#             .map(
+#                 lambda words:
+#                 token in words
+#             )
+#         )
+
+#         scores += name_exact.astype(float) * 5
+
+
+#         # ----------------------------------------------------
+#         # CATEGORY
+#         # ----------------------------------------------------
+
+#         category_match = (
+#             products["category"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += category_match.astype(float) * 8
+
+
+#         # ----------------------------------------------------
+#         # SUBCATEGORY
+#         # ----------------------------------------------------
+
+#         subcategory_match = (
+#             products["subcategory"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += subcategory_match.astype(float) * 7
+
+
+#         # ----------------------------------------------------
+#         # COLOR
+#         # ----------------------------------------------------
+
+#         color_match = (
+#             products["color"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += color_match.astype(float) * 7
+
+
+#         # ----------------------------------------------------
+#         # STYLE
+#         # ----------------------------------------------------
+
+#         style_match = (
+#             products["style"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += style_match.astype(float) * 5
+
+
+#         # ----------------------------------------------------
+#         # GENDER
+#         # ----------------------------------------------------
+
+#         gender_match = (
+#             products["gender"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += gender_match.astype(float) * 3
+
+
+#         # ----------------------------------------------------
+#         # FIT
+#         # ----------------------------------------------------
+
+#         fit_match = (
+#             products["fit"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += fit_match.astype(float) * 3
+
+
+#     # ========================================================
+#     # ATTACH SCORE
+#     # ========================================================
+
+#     result = products.copy()
+
+#     result["search_score"] = scores
+
+
+#     # ========================================================
+#     # REMOVE NON-MATCHES
+#     # ========================================================
+
+#     result = result[
+#         result["search_score"] > 0
+#     ]
+
+
+#     # ========================================================
+#     # SORT
+#     # ========================================================
+
+#     result = result.sort_values(
+#         by="search_score",
+#         ascending=False,
+#         kind="stable"
+#     )
+
+
+#     # ========================================================
+#     # RETURN ONLY REQUIRED PRODUCTS
+#     # ========================================================
+
+#     return result.head(limit)
+
+
+# # ============================================================
+# # CLI
+# # ============================================================
+
+# if __name__ == "__main__":
+
+#     try:
+
+#         # ----------------------------------------------------
+#         # READ JSON FROM NODE
+#         # ----------------------------------------------------
+
+#         input_data = sys.stdin.read()
+
+#         if input_data.strip():
+
+#             data = json.loads(input_data)
+
+#             query = data.get(
+#                 "query",
+#                 ""
+#             )
+
+#         else:
+
+#             query = ""
+
+
+#         # ----------------------------------------------------
+#         # SEARCH
+#         # ----------------------------------------------------
+
+#         results = search_products(
+#             query
+#         )
+
+
+#         # ----------------------------------------------------
+#         # REMOVE HELPER COLUMNS
+#         # ----------------------------------------------------
+
+#         helper_columns = [
+#             column
+#             for column in results.columns
+#             if column.startswith("_")
+#         ]
+
+#         results = results.drop(
+#             columns=helper_columns,
+#             errors="ignore"
+#         )
+
+
+#         # ----------------------------------------------------
+#         # CLEAN NaN
+#         # ----------------------------------------------------
+
+#         results = results.fillna("")
+
+
+#         # ----------------------------------------------------
+#         # RETURN JSON
+#         # ----------------------------------------------------
+
+#         print(
+#             json.dumps(
+#                 {
+#                     "success": True,
+#                     "count": len(results),
+#                     "products": results.to_dict(
+#                         orient="records"
+#                     )
+#                 },
+#                 default=str
+#             )
+#         )
+
+
+#     except Exception as error:
+
+#         print(
+#             json.dumps(
+#                 {
+#                     "success": False,
+#                     "error": str(error)
+#                 }
+#             )
+#         )
+
+#         sys.exit(1)

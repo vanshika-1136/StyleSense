@@ -1,15 +1,7 @@
-const fs = require("fs");
-const path = require("path");
-const csv = require("csv-parser");
 
 const pool = require("../db/db");
 
-const PRODUCT_FILE = path.join(
-    __dirname,
-    "..",
-    "recomendationSystem",
-    "stylesense_products_clean.csv"
-);
+
 
 
 // ============================================================
@@ -69,22 +61,16 @@ const getCart = async (req, res) => {
         // Keep only products whose latest state is add_to_cart
         // ----------------------------------------------------
 
-        const cartIds = result.rows
-            .filter(
-                row =>
-                    row.interaction_type ===
-                    "add_to_cart"
-            )
-            .map(
-                row =>
-                    String(row.product_id)
-            );
-
-
-        console.log(
-            "CART PRODUCT IDS:",
-            cartIds
-        );
+const cartIds = result.rows
+    .filter(
+        row =>
+            row.interaction_type ===
+            "add_to_cart"
+    )
+    .map(
+        row =>
+            Number(row.product_id)
+    );
 
 
         // ----------------------------------------------------
@@ -106,34 +92,36 @@ const getCart = async (req, res) => {
         // Load products from CSV
         // ----------------------------------------------------
 
-        const products = [];
+const productQuery = `
+    SELECT
+        id,
+        name,
+        image_url,
+        price,
+        mrp,
+        rating,
+        "ratingTotal",
+        discount,
+        calculated_discount,
+        popularity_score,
+        seller,
+        gender,
+        category,
+        subcategory,
+        color,
+        fit,
+        style,
+        purl
+    FROM products
+    WHERE id = ANY($1::bigint[]);
+`;
 
-        await new Promise((resolve, reject) => {
+const productResult = await pool.query(
+    productQuery,
+    [cartIds]
+);
 
-            fs.createReadStream(PRODUCT_FILE)
-
-                .pipe(csv())
-
-                .on("data", (row) => {
-
-                    const csvId =
-                        String(row.id);
-
-                    if (
-                        cartIds.includes(csvId)
-                    ) {
-
-                        products.push(row);
-
-                    }
-
-                })
-
-                .on("end", resolve)
-
-                .on("error", reject);
-
-        });
+const products = productResult.rows;
 
 
         // ----------------------------------------------------

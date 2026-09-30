@@ -159,6 +159,20 @@ function StyleSenseApp() {
       console.error('Failed to record search history:', error);
     });
   };
+
+  useEffect(() => {
+  const trimmedQuery = query?.trim();
+
+  if (!trimmedQuery) {
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    handleSearch(trimmedQuery);
+  }, 400);
+
+  return () => clearTimeout(timer);
+}, [query]);
   // =========================================================
   // INTERACTION
   // =========================================================

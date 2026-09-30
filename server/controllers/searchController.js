@@ -1,112 +1,6 @@
 const { spawn } = require("child_process");
 const path = require("path");
-const fs = require("fs");
-const csv = require("csv-parser");
-
-// =====================================================
-// RUN PYTHON
-// =====================================================
-
-const runPython = (
-    scriptPath,
-    input
-) => {
-
-    return new Promise(
-        (resolve, reject) => {
-
-            const pythonProcess = spawn(
-                "python",
-                [scriptPath]
-            );
-
-            let output = "";
-            let errorOutput = "";
-
-
-            // =========================================
-            // STDOUT
-            // =========================================
-
-            pythonProcess.stdout.on(
-                "data",
-                (data) => {
-
-                    output += data.toString();
-
-                }
-            );
-
-
-            // =========================================
-            // STDERR
-            // =========================================
-
-            pythonProcess.stderr.on(
-                "data",
-                (data) => {
-
-                    errorOutput +=
-                        data.toString();
-
-                }
-            );
-
-
-            // =========================================
-            // SEND INPUT
-            // =========================================
-
-            pythonProcess.stdin.write(
-                JSON.stringify(input)
-            );
-
-            pythonProcess.stdin.end();
-
-
-            // =========================================
-            // COMPLETE
-            // =========================================
-
-            pythonProcess.on("close", (code) => {
-                console.log("Python exit code:", code);
-
-                if (errorOutput) {
-                    console.log("Python stderr:", errorOutput);
-                }
-
-                if (code !== 0) {
-                    return reject(
-                        new Error(errorOutput || `Python exited with code ${code}`)
-                    );
-                }
-
-                try {
-                    const parsedOutput = JSON.parse(output);
-                    resolve(parsedOutput);
-                } catch (error) {
-                    console.error("Python stdout:", output);
-                    console.error("Python stderr:", errorOutput);
-
-                    reject(new Error("Invalid JSON returned by Python"));
-                }
-            });
-
-
-            pythonProcess.on(
-                "error",
-                (error) => {
-
-                    reject(error);
-
-                }
-            );
-
-        }
-    );
-
-};
-
+const pool = require("../db/db");
 
 
 // =====================================================
@@ -114,12 +8,41 @@ const runPython = (
 // =====================================================
 
 const searchProducts = (req, res) => {
+const {
+    q,
+    user_id,
+    gender,
+    category,
+    subcategory,
+    color,
+    fit,
+    style,
+    min_price,
+    max_price,
+    min_rating,
+    min_discount
+} = req.query;
 
-    const {
-        q,
-        user_id,
-    } = req.query;
-
+const filters = {
+    gender,
+    category,
+    subcategory,
+    color,
+    fit,
+    style,
+    min_price: min_price
+        ? Number(min_price)
+        : undefined,
+    max_price: max_price
+        ? Number(max_price)
+        : undefined,
+    min_rating: min_rating
+        ? Number(min_rating)
+        : undefined,
+    min_discount: min_discount
+        ? Number(min_discount)
+        : undefined
+};
 
     // ============================================
     // VALIDATE SEARCH
@@ -156,7 +79,7 @@ const searchProducts = (req, res) => {
         __dirname,
         "..",
         "recomendationSystem",
-        "search_engine.py"
+        "combined_engine.py"
     );
 
     console.log(
@@ -221,8 +144,7 @@ const searchProducts = (req, res) => {
 
             user_id:
                 user_id || null,
-
-
+            filters
         })
     );
 
@@ -337,52 +259,40 @@ const getTrendingProducts = async (req, res) => {
 
     try {
 
-        const PRODUCT_FILE = path.join(
-            __dirname,
-            "..",
-            "recomendationSystem",
-            "stylesense_products_clean.csv"
-        );
+        const query = `
+            SELECT
+                id,
+                name,
+                image_url,
+                price,
+                mrp,
+                rating,
+                "ratingTotal",
+                discount,
+                calculated_discount,
+                popularity_score,
+                seller,
+                gender,
+                category,
+                subcategory,
+                color,
+                fit,
+                style,
+                purl
+            FROM products
+            ORDER BY popularity_score DESC NULLS LAST
+            LIMIT 20;
+        `;
 
-        console.log(
-            "Loading trending products from:",
-            PRODUCT_FILE
-        );
-
-        const products = [];
-
-        await new Promise((resolve, reject) => {
-
-            fs.createReadStream(PRODUCT_FILE)
-
-                .pipe(csv())
-
-                .on("data", (row) => {
-
-                    if (products.length < 20) {
-                        products.push(row);
-                    }
-
-                })
-
-                .on("end", resolve)
-
-                .on("error", reject);
-
-        });
-
-        console.log(
-            "Trending products loaded:",
-            products.length
-        );
+        const result = await pool.query(query);
 
         return res.json({
 
             success: true,
 
-            count: products.length,
+            count: result.rows.length,
 
-            products
+            products: result.rows
 
         });
 
