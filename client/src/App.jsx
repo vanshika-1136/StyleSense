@@ -46,10 +46,16 @@ function StyleSenseApp() {
   const [page, setPage] = useState(
     sessionStorage.getItem('stylesense_page') || 'home'
   );
-  const changePage = (newPage) => {
-    sessionStorage.setItem('stylesense_page', newPage);
-    setPage(newPage);
-  };
+const changePage = (newPage) => {
+  sessionStorage.setItem('stylesense_page', newPage);
+
+  if (newPage === 'home') {
+    hasSearched.current = false;
+    setQuery('');
+  }
+
+  setPage(newPage);
+};
   // GLOBAL SEARCH QUERY
   const [query, setQuery] = useState('');
 
@@ -91,88 +97,100 @@ function StyleSenseApp() {
   // Existing user → Personalized
   // =========================================================
 
-  useEffect(() => {
-    const loadDashboardProducts = async () => {
-      if (hasSearched.current) {
-        return;
-      }
-
-      try {
-        setLoading(true);
-
-        const data = await getRecommendations(userId);
-
-        // Don't overwrite search results
-        if (hasSearched.current) {
-          return;
-        }
-
-        if (data?.products) {
-          setProducts(data.products);
-        }
-      } catch (error) {
-        console.error('Failed to load dashboard products:', error);
-      } finally {
-        if (!hasSearched.current) {
-          setLoading(false);
-        }
-      }
-    };
-
-    loadDashboardProducts();
-  }, [userId]);
-
-  // =========================================================
-  // SEARCH
-  // =========================================================
-
-  const handleSearch = async (searchQuery) => {
-    const trimmedQuery = searchQuery?.trim();
-
-    if (!trimmedQuery) {
+useEffect(() => {
+  const loadDashboardProducts = async () => {
+    if (hasSearched.current) {
       return;
     }
 
-    hasSearched.current = true;
-
-    setQuery(trimmedQuery);
-    changePage('home');
-    setProducts([]);
-    setLoading(true);
-
     try {
-      const data = await searchProducts(trimmedQuery, userId);
+      setLoading(true);
+
+      const data = await getRecommendations(userId);
+
+      console.log('========== RECOMMENDATION RESPONSE ==========');
+      console.log('User ID:', userId);
+      console.log('Response:', data);
+      console.log('Products:', data?.products);
+      console.log('Product count:', data?.products?.length);
+
+      if (hasSearched.current) {
+        return;
+      }
 
       if (data?.products) {
         setProducts(data.products);
       }
     } catch (error) {
-      console.error('Search failed:', error);
+      console.error('Failed to load dashboard products:', error);
     } finally {
-      setLoading(false);
+      if (!hasSearched.current) {
+        setLoading(false);
+      }
     }
-
-    recordSearch({
-      user_id: userId,
-      query: trimmedQuery,
-    }).catch((error) => {
-      console.error('Failed to record search history:', error);
-    });
   };
 
-  useEffect(() => {
-  const trimmedQuery = query?.trim();
+  loadDashboardProducts();
+}, [userId]);
+
+  // =========================================================
+  // SEARCH
+  // =========================================================
+
+const handleSearch = async (searchQuery) => {
+  const trimmedQuery = searchQuery?.trim();
 
   if (!trimmedQuery) {
     return;
   }
 
-  const timer = setTimeout(() => {
-    handleSearch(trimmedQuery);
-  }, 400);
+  hasSearched.current = true;
 
-  return () => clearTimeout(timer);
-}, [query]);
+  setQuery(trimmedQuery);
+  changePage('home');
+  setProducts([]);
+  setLoading(true);
+
+  try {
+    const data = await searchProducts(trimmedQuery, userId);
+
+    console.log('========== SEARCH RESPONSE ==========');
+    console.log('Query:', trimmedQuery);
+    console.log('User ID:', userId);
+    console.log('Response:', data);
+    console.log('Products:', data?.products);
+    console.log('Product count:', data?.products?.length);
+
+    if (data?.products) {
+      setProducts(data.products);
+    }
+  } catch (error) {
+    console.error('Search failed:', error);
+  } finally {
+    setLoading(false);
+  }
+
+  recordSearch({
+    user_id: userId,
+    query: trimmedQuery,
+  }).catch((error) => {
+    console.error('Failed to record search history:', error);
+  });
+};
+
+//   useEffect(() => {
+//   const trimmedQuery = query?.trim();
+
+//   if (!trimmedQuery) {
+//     return;
+//   }
+
+//   const timer = setTimeout(() => {
+//     handleSearch(trimmedQuery);
+//   }, 400);
+
+//   return () => clearTimeout(timer);
+// }, [query]);
   // =========================================================
   // INTERACTION
   // =========================================================

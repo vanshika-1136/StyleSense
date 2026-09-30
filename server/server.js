@@ -5,11 +5,9 @@ const searchRoutes = require("./routes/searchRoutes");
 const interactionRoutes = require("./routes/interactionRoutes");
 const wishlistRoutes = require("./routes/wishlistRoutes");
 const cartRoutes = require("./routes/cartRoutes");
-const recommendationRoutes =
-    require("./routes/recommendationRoutes");
-    const searchHistoryRoutes =
-    require("./routes/searchHistoryRoutes");
-    const authRoutes = require("./routes/authRoutes");
+const recommendationRoutes = require("./routes/recommendationRoutes");
+const searchHistoryRoutes = require("./routes/searchHistoryRoutes");
+const authRoutes = require("./routes/authRoutes");
 
 
 
@@ -76,9 +74,7 @@ const startServer = async () => {
 
         app.listen(PORT, () => {
 
-            console.log(
-                `StyleSense server running on http://localhost:${PORT}`
-            );
+            console.log(`StyleSense server running on port ${PORT}`);
 
         });
 
