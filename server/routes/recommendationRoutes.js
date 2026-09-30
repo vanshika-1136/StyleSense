@@ -7,7 +7,7 @@ const {
 const router = express.Router();
 
 router.get(
-    "/:user_id",
+    "/user/:user_id",
     authMiddleware,
     getRecommendations
 );
