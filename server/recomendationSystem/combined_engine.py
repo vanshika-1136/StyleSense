@@ -5,6 +5,7 @@ import psycopg2
 import os
 import sys
 import json
+import math
 
 from dotenv import load_dotenv
 from functools import lru_cache
@@ -39,11 +40,15 @@ INTERACTION_FILE = os.path.join(
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 CANDIDATE_LIMIT = 50
-FINAL_LIMIT = 20
+FINAL_LIMIT = 40
+
+# Recent interactions matter more.
+# Higher value = faster decay.
+RECENCY_HALF_LIFE_DAYS = 14
 
 
 # ============================================================
-# LOAD STATIC DATA ONCE
+# LOAD PRODUCTS
 # ============================================================
 
 print(
@@ -54,6 +59,11 @@ print(
 PRODUCTS_DF = pd.read_csv(
     PRODUCT_FILE,
     low_memory=False
+)
+
+PRODUCTS_DF.columns = (
+    PRODUCTS_DF.columns
+    .str.strip()
 )
 
 PRODUCTS_DF["id"] = (
@@ -68,7 +78,7 @@ print(
 
 
 # ============================================================
-# NORMALIZATION
+# NORMALIZE SCORE
 # ============================================================
 
 def normalize_score(series):
@@ -78,10 +88,14 @@ def normalize_score(series):
         errors="coerce"
     ).fillna(0)
 
+    if len(series) == 0:
+        return series
+
     min_value = series.min()
     max_value = series.max()
 
     if max_value == min_value:
+
         return pd.Series(
             np.zeros(len(series)),
             index=series.index
@@ -95,7 +109,7 @@ def normalize_score(series):
 
 
 # ============================================================
-# USER INTERACTIONS
+# USER INTERACTIONS FROM NEON
 # ============================================================
 
 def get_user_interactions(user_id):
@@ -135,7 +149,7 @@ def get_user_interactions(user_id):
             FROM interactions
             WHERE user_id = %s
             ORDER BY timestamp DESC
-            LIMIT 100
+            LIMIT 200
             """,
             (user_id,)
         )
@@ -163,6 +177,12 @@ def get_user_interactions(user_id):
             df["product_id"] = (
                 df["product_id"]
                 .astype(str)
+            )
+
+            df["timestamp"] = pd.to_datetime(
+                df["timestamp"],
+                errors="coerce",
+                utc=True
             )
 
             df["dwell_time_ms"] = (
@@ -211,30 +231,93 @@ INTERACTION_WEIGHTS = {
 
 
 # ============================================================
-# DWELL TIME SCORE
+# DWELL TIME
 # ============================================================
 
 def dwell_score(milliseconds):
 
     try:
+
         seconds = float(milliseconds) / 1000
 
     except Exception:
+
         return 0
 
-    if seconds < 3:
+    if seconds < 2:
         return 0
+
+    if seconds < 5:
+        return 0.5
 
     if seconds < 10:
         return 1
 
-    if seconds < 30:
+    if seconds < 20:
         return 2
 
-    if seconds < 60:
+    if seconds < 40:
         return 3
 
     return 4
+
+
+# ============================================================
+# RECENCY SCORE
+# ============================================================
+
+def calculate_recency(timestamp):
+
+    """
+    Exponential decay.
+
+    Example with 14-day half-life:
+
+    Today       -> 1.00
+    7 days ago  -> ~0.71
+    14 days ago -> 0.50
+    28 days ago -> 0.25
+    """
+
+    if pd.isna(timestamp):
+
+        return 0.1
+
+    try:
+
+        now = pd.Timestamp.now(
+            tz="UTC"
+        )
+
+        timestamp = pd.Timestamp(
+            timestamp
+        )
+
+        if timestamp.tzinfo is None:
+
+            timestamp = timestamp.tz_localize(
+                "UTC"
+            )
+
+        age_days = max(
+            0,
+            (
+                now - timestamp
+            ).total_seconds()
+            / 86400
+        )
+
+        decay = math.exp(
+            -math.log(2)
+            * age_days
+            / RECENCY_HALF_LIFE_DAYS
+        )
+
+        return decay
+
+    except Exception:
+
+        return 0.1
 
 
 # ============================================================
@@ -244,6 +327,7 @@ def dwell_score(milliseconds):
 def build_user_profile(interactions):
 
     if interactions.empty:
+
         return {}
 
     profile = {
@@ -256,9 +340,8 @@ def build_user_profile(interactions):
         "style": {}
     }
 
-
     # --------------------------------------------------------
-    # Merge interaction history with product attributes
+    # PRODUCT ATTRIBUTES
     # --------------------------------------------------------
 
     product_attributes = PRODUCTS_DF[
@@ -278,6 +361,9 @@ def build_user_profile(interactions):
         .astype(str)
     )
 
+    # --------------------------------------------------------
+    # COPY INTERACTIONS
+    # --------------------------------------------------------
 
     interactions = interactions.copy()
 
@@ -286,6 +372,9 @@ def build_user_profile(interactions):
         .astype(str)
     )
 
+    # --------------------------------------------------------
+    # MERGE
+    # --------------------------------------------------------
 
     merged = interactions.merge(
 
@@ -298,9 +387,8 @@ def build_user_profile(interactions):
         how="left"
     )
 
-
     # --------------------------------------------------------
-    # Calculate interaction strength
+    # INTERACTION SCORE
     # --------------------------------------------------------
 
     merged["interaction_score"] = (
@@ -309,22 +397,52 @@ def build_user_profile(interactions):
         .fillna(0)
     )
 
+    # --------------------------------------------------------
+    # DWELL SCORE
+    # --------------------------------------------------------
 
     merged["dwell_score"] = (
         merged["dwell_time_ms"]
         .apply(dwell_score)
     )
 
+    # --------------------------------------------------------
+    # RECENCY
+    # --------------------------------------------------------
 
-    merged["total_score"] = (
+    merged["recency_score"] = (
+        merged["timestamp"]
+        .apply(calculate_recency)
+    )
+
+    # --------------------------------------------------------
+    # BASE BEHAVIOR SCORE
+    # --------------------------------------------------------
+
+    merged["behavior_score"] = (
+
         merged["interaction_score"]
+
         +
+
         merged["dwell_score"]
     )
 
+    # --------------------------------------------------------
+    # APPLY RECENCY
+    # --------------------------------------------------------
+
+    merged["total_score"] = (
+
+        merged["behavior_score"]
+
+        *
+
+        merged["recency_score"]
+    )
 
     # --------------------------------------------------------
-    # Add attribute preferences
+    # BUILD ATTRIBUTE PREFERENCES
     # --------------------------------------------------------
 
     attributes = [
@@ -342,7 +460,6 @@ def build_user_profile(interactions):
         ("fit", 2)
     ]
 
-
     for attribute, weight in attributes:
 
         valid = merged[
@@ -359,7 +476,6 @@ def build_user_profile(interactions):
         if valid.empty:
             continue
 
-
         scores = (
             valid
             .groupby(attribute)["total_score"]
@@ -367,15 +483,14 @@ def build_user_profile(interactions):
             * weight
         )
 
+        # Keep strongest preferences only.
+        scores = scores.sort_values(
+            ascending=False
+        ).head(10)
 
         profile[attribute] = (
-            scores
-            .sort_values(
-                ascending=False
-            )
-            .to_dict()
+            scores.to_dict()
         )
-
 
     return profile
 
@@ -392,9 +507,7 @@ def calculate_personalization_score(
     if not profile:
         return 0
 
-
     score = 0
-
 
     attributes = [
 
@@ -411,7 +524,6 @@ def calculate_personalization_score(
         ("gender", 1)
     ]
 
-
     for attribute, weight in attributes:
 
         if attribute not in product:
@@ -422,36 +534,33 @@ def calculate_personalization_score(
         if pd.isna(value):
             continue
 
-        value = str(value).strip().lower()
+        value = (
+            str(value)
+            .strip()
+            .lower()
+        )
 
         if not value:
             continue
-
 
         attribute_profile = profile.get(
             attribute,
             {}
         )
 
+        profile_score = (
+            attribute_profile.get(
+                value,
+                0
+            )
+        )
 
-        for profile_value, profile_score in (
-            attribute_profile.items()
-        ):
+        if profile_score > 0:
 
-            if (
-                str(profile_value)
-                .strip()
-                .lower()
-                == value
-            ):
-
-                score += (
-                    profile_score
-                    * weight
-                )
-
-                break
-
+            score += (
+                profile_score
+                * weight
+            )
 
     return score
 
@@ -471,9 +580,7 @@ def generate_recommendation_reason(
             "Popular with StyleSense shoppers"
         )
 
-
     matches = []
-
 
     attributes = [
 
@@ -490,7 +597,6 @@ def generate_recommendation_reason(
         ("gender", 1)
     ]
 
-
     for attribute, weight in attributes:
 
         if attribute not in product:
@@ -501,36 +607,38 @@ def generate_recommendation_reason(
         if pd.isna(value):
             continue
 
-        value = str(value).strip().lower()
+        value = (
+            str(value)
+            .strip()
+            .lower()
+        )
 
         if not value:
             continue
-
 
         attribute_profile = profile.get(
             attribute,
             {}
         )
 
-
-        if value in attribute_profile:
-
-            profile_score = (
-                attribute_profile[value]
+        profile_score = (
+            attribute_profile.get(
+                value,
+                0
             )
+        )
 
-            if profile_score > 0:
+        if profile_score > 0:
 
-                matches.append({
+            matches.append({
 
-                    "attribute": attribute,
+                "attribute": attribute,
 
-                    "value": value,
+                "value": value,
 
-                    "score":
-                        profile_score * weight
-                })
-
+                "score":
+                    profile_score * weight
+            })
 
     if not matches:
 
@@ -538,15 +646,12 @@ def generate_recommendation_reason(
             "Matches your recent fashion activity"
         )
 
-
     matches.sort(
         key=lambda x: x["score"],
         reverse=True
     )
 
-
     best = matches[0]
-
 
     display_value = (
         str(best["value"])
@@ -554,28 +659,26 @@ def generate_recommendation_reason(
         .title()
     )
 
-
     phrases = {
 
         "category":
-            f"Because you liked {display_value} products",
+            f"Because you often explore {display_value} products",
 
         "subcategory":
-            f"Because you explored {display_value}",
+            f"Because you recently explored {display_value}",
 
         "color":
-            f"Because you interacted with {display_value} products",
+            f"Because you often interact with {display_value} products",
 
         "style":
-            f"Because you liked the {display_value} style",
+            f"Because you often explore {display_value} styles",
 
         "fit":
-            f"Because you liked the {display_value} fit",
+            f"Because you often explore {display_value} fits",
 
         "gender":
             f"Based on your recent {display_value} preferences"
     }
-
 
     return phrases.get(
 
@@ -586,7 +689,7 @@ def generate_recommendation_reason(
 
 
 # ============================================================
-# POPULARITY
+# CSV POPULARITY
 # ============================================================
 
 @lru_cache(maxsize=1)
@@ -596,7 +699,6 @@ def calculate_csv_popularity():
         "Calculating popularity...",
         file=sys.stderr
     )
-
 
     if not os.path.exists(
         INTERACTION_FILE
@@ -609,12 +711,10 @@ def calculate_csv_popularity():
             ]
         )
 
-
     interactions = pd.read_csv(
         INTERACTION_FILE,
         low_memory=False
     )
-
 
     if interactions.empty:
 
@@ -625,19 +725,16 @@ def calculate_csv_popularity():
             ]
         )
 
-
     interactions["product_id"] = (
         interactions["product_id"]
         .astype(str)
     )
-
 
     interactions["interaction_score"] = (
         interactions["interaction_type"]
         .map(INTERACTION_WEIGHTS)
         .fillna(0)
     )
-
 
     popularity = (
 
@@ -648,14 +745,12 @@ def calculate_csv_popularity():
         .reset_index()
     )
 
-
     popularity.columns = [
 
         "product_id",
 
         "popularity_score"
     ]
-
 
     return popularity
 
@@ -668,11 +763,9 @@ def add_popularity_score(result):
 
     result = result.copy()
 
-
     popularity = (
         calculate_csv_popularity()
     )
-
 
     if popularity.empty:
 
@@ -680,13 +773,11 @@ def add_popularity_score(result):
 
         return result
 
-
     if "popularity_score" in result.columns:
 
         result = result.drop(
             columns=["popularity_score"]
         )
-
 
     if "product_id" in result.columns:
 
@@ -694,12 +785,10 @@ def add_popularity_score(result):
             columns=["product_id"]
         )
 
-
     result["id"] = (
         result["id"]
         .astype(str)
     )
-
 
     result = result.merge(
 
@@ -712,7 +801,6 @@ def add_popularity_score(result):
         how="left"
     )
 
-
     result["popularity_score"] = (
 
         pd.to_numeric(
@@ -724,13 +812,11 @@ def add_popularity_score(result):
         .fillna(0)
     )
 
-
     result["popularity_score"] = (
         normalize_score(
             result["popularity_score"]
         )
     )
-
 
     if "product_id" in result.columns:
 
@@ -739,25 +825,22 @@ def add_popularity_score(result):
             inplace=True
         )
 
-
     return result
 
 
 # ============================================================
-# RATING SCORE
+# RATING
 # ============================================================
 
 def add_rating_score(result):
 
     result = result.copy()
 
-
     if "rating" not in result.columns:
 
         result["rating_score"] = 0.0
 
         return result
-
 
     result["rating_score"] = (
 
@@ -770,25 +853,24 @@ def add_rating_score(result):
         .fillna(0)
     )
 
-
     result["rating_score"] = (
         normalize_score(
             result["rating_score"]
         )
     )
 
-
     return result
 
 
+
 # ============================================================
-# MAIN COMBINED SEARCH
+# MAIN SEARCH + PERSONALIZATION
 # ============================================================
 
 def combined_search(
     query,
     user_id=None,
-    limit=20
+    limit=50,
 ):
 
     print(
@@ -796,21 +878,17 @@ def combined_search(
         file=sys.stderr
     )
 
-
     # ========================================================
-    # STEP 1
-    # SEARCH
+    # 1. SEARCH
     # ========================================================
 
     search_result = search_products(
         query
     )
-
-
+    
     if search_result is None:
 
         return pd.DataFrame()
-
 
     if isinstance(
         search_result,
@@ -825,31 +903,25 @@ def combined_search(
 
         result = search_result.copy()
 
-
     if result.empty:
 
         return result
-
 
     print(
         f"Search returned {len(result)} candidates",
         file=sys.stderr
     )
 
-
     # ========================================================
-    # STEP 2
-    # ONLY PERSONALIZE TOP 50
+    # 2. TOP CANDIDATES
     # ========================================================
 
     result = result.head(
         CANDIDATE_LIMIT
     ).copy()
 
-
     # ========================================================
-    # STEP 3
-    # USER HISTORY
+    # 3. USER HISTORY
     # ========================================================
 
     interactions = (
@@ -858,21 +930,17 @@ def combined_search(
         )
     )
 
-
     has_history = (
         not interactions.empty
     )
-
 
     print(
         f"User history: {len(interactions)} interactions",
         file=sys.stderr
     )
 
-
     # ========================================================
-    # STEP 4
-    # PERSONALIZATION
+    # 4. PERSONALIZATION
     # ========================================================
 
     if has_history:
@@ -881,18 +949,17 @@ def combined_search(
             interactions
         )
 
-
         print(
-            "Using personalized ranking",
+            "Using recency-aware personalized ranking",
             file=sys.stderr
         )
-
 
         result["personalization_score"] = (
 
             result.apply(
 
                 lambda row:
+
                     calculate_personalization_score(
                         row,
                         profile
@@ -902,12 +969,12 @@ def combined_search(
             )
         )
 
-
         result["recommendation_reason"] = (
 
             result.apply(
 
                 lambda row:
+
                     generate_recommendation_reason(
                         row,
                         profile
@@ -916,7 +983,6 @@ def combined_search(
                 axis=1
             )
         )
-
 
         result[
             "personalization_score_normalized"
@@ -927,7 +993,6 @@ def combined_search(
             ]
         )
 
-
     else:
 
         print(
@@ -935,16 +1000,15 @@ def combined_search(
             file=sys.stderr
         )
 
+        profile = {}
 
         result[
             "personalization_score"
         ] = 0
 
-
         result[
             "personalization_score_normalized"
         ] = 0
-
 
         result[
             "recommendation_reason"
@@ -952,30 +1016,24 @@ def combined_search(
             "Popular with StyleSense shoppers"
         )
 
-
     # ========================================================
-    # STEP 5
-    # POPULARITY
+    # 5. POPULARITY
     # ========================================================
 
     result = add_popularity_score(
         result
     )
 
-
     # ========================================================
-    # STEP 6
-    # RATING
+    # 6. RATING
     # ========================================================
 
     result = add_rating_score(
         result
     )
 
-
     # ========================================================
-    # STEP 7
-    # NORMALIZE SEARCH SCORE
+    # 7. SEARCH SCORE
     # ========================================================
 
     if "search_score" in result.columns:
@@ -999,10 +1057,8 @@ def combined_search(
             "search_score_normalized"
         ] = 0
 
-
     # ========================================================
-    # STEP 8
-    # FINAL RANKING
+    # 8. FINAL RANKING
     # ========================================================
 
     if has_history:
@@ -1054,28 +1110,48 @@ def combined_search(
         )
 
 
-    # ========================================================
-    # STEP 9
-    # SORT + TOP 20
-    # ========================================================
 
-    result = (
+    sort = (filters or {}).get("sort")
 
-        result
-        .sort_values(
+    if sort == "price_low" and "price" in result.columns:
+
+        result = result.sort_values(
+            "price",
+            ascending=True
+        )
+
+    elif sort == "price_high" and "price" in result.columns:
+
+        result = result.sort_values(
+            "price",
+            ascending=False
+        )
+
+    elif sort == "rating" and "rating" in result.columns:
+
+        result = result.sort_values(
+            "rating",
+            ascending=False
+        )
+
+    else:
+
+        # Default = intelligent StyleSense ranking
+        result = result.sort_values(
             "final_score",
             ascending=False
         )
+
+    result = (
+        result
         .head(limit)
         .reset_index(drop=True)
     )
-
 
     print(
         f"Final results: {len(result)}",
         file=sys.stderr
     )
-
 
     return result
 
@@ -1090,7 +1166,6 @@ if __name__ == "__main__":
 
         input_data = sys.stdin.read()
 
-
         if not input_data.strip():
 
             print(
@@ -1103,11 +1178,9 @@ if __name__ == "__main__":
 
             sys.exit(1)
 
-
         data = json.loads(
             input_data
         )
-
 
         query = (
             data
@@ -1115,11 +1188,9 @@ if __name__ == "__main__":
             .strip()
         )
 
-
         user_id = data.get(
             "user_id"
         )
-
 
         limit = int(
             data.get(
@@ -1127,7 +1198,6 @@ if __name__ == "__main__":
                 FINAL_LIMIT
             )
         )
-
 
         if not query:
 
@@ -1141,78 +1211,51 @@ if __name__ == "__main__":
 
             sys.exit(1)
 
-
         results = combined_search(
-
             query=query,
-
             user_id=user_id,
-
             limit=limit
         )
-
 
         if results is None:
 
             results = pd.DataFrame()
 
-
         results = results.fillna("")
-
 
         output_columns = [
 
             "id",
-
             "name",
-
             "image_url",
-
             "price",
-
             "mrp",
-
             "rating",
-
             "ratingTotal",
-
             "discount",
-
             "calculated_discount",
-
             "seller",
-
             "gender",
-
             "category",
-
             "subcategory",
-
             "color",
-
             "fit",
-
             "style",
-
             "purl",
 
             "search_score",
-
             "search_score_normalized",
 
             "personalization_score",
-
             "personalization_score_normalized",
 
             "recommendation_reason",
 
             "popularity_score",
-
             "rating_score",
 
             "final_score"
         ]
-
 
         output_columns = [
 
@@ -1223,11 +1266,9 @@ if __name__ == "__main__":
             if column in results.columns
         ]
 
-
         results = results[
             output_columns
         ]
-
 
         response = {
 
@@ -1245,14 +1286,12 @@ if __name__ == "__main__":
                 )
         }
 
-
         print(
             json.dumps(
                 response,
                 default=str
             )
         )
-
 
     except Exception as e:
 
@@ -1262,7 +1301,6 @@ if __name__ == "__main__":
             file=sys.stderr
         )
 
-
         print(
             json.dumps({
                 "success": False,
@@ -1270,6 +1308,6 @@ if __name__ == "__main__":
             })
         )
 
-
         sys.exit(1)
+
 

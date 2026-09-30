@@ -1,7 +1,10 @@
 function Hero({ query, setQuery, onSearch }) {
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSearch();
+
+    if (!query.trim()) return;
+
+    onSearch?.(query);
   };
 
   return (

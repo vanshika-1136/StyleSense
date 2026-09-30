@@ -11,13 +11,14 @@ const recordInteraction = async (req, res) => {
     try {
 
         const {
-            user_id,
+            
             product_id,
             session_id,
             interaction_type,
             dwell_time_ms
         } = req.body;
 
+        const user_id = req.user.user_id;
 
         if (
             !user_id ||
@@ -117,9 +118,7 @@ const getUserInteractions = async (req, res) => {
 
     try {
 
-        const {
-            user_id
-        } = req.params;
+        const user_id = req.user.user_id;
 
 
         if (!user_id) {

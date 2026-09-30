@@ -4,6 +4,12 @@ const cors = require("cors");
 const searchRoutes = require("./routes/searchRoutes");
 const interactionRoutes = require("./routes/interactionRoutes");
 const wishlistRoutes = require("./routes/wishlistRoutes");
+const cartRoutes = require("./routes/cartRoutes");
+const recommendationRoutes =
+    require("./routes/recommendationRoutes");
+    const searchHistoryRoutes =
+    require("./routes/searchHistoryRoutes");
+    const authRoutes = require("./routes/authRoutes");
 // const {
 //     loadProducts
 // } = require("./practice/services/preferenceEngine");
@@ -35,7 +41,8 @@ app.use(
     interactionRoutes
 );
 app.use("/api/wishlist", wishlistRoutes);
-
+app.use("/api/cart", cartRoutes);
+app.use("/api/auth", authRoutes);
 // ========================================
 // HOME
 // ========================================
@@ -47,7 +54,14 @@ app.get("/", (req, res) => {
     });
 
 });
-
+app.use(
+    "/api/recommendations",
+    recommendationRoutes
+);
+app.use(
+    "/api/search-history",
+    searchHistoryRoutes
+);
 
 // ========================================
 // START SERVER

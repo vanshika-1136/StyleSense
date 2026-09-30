@@ -1,14 +1,17 @@
 const express = require("express");
 
-const {
-getWishlist
-} = require("../controllers/wishlistController");
-
 const router = express.Router();
 
+const authMiddleware = require("../middleware/authMiddleware");
+
+const {
+  getWishlist,
+} = require("../controllers/wishlistController");
+
 router.get(
-"/user/:user_id",
-getWishlist
+  "/user/:userId",
+  authMiddleware,
+  getWishlist
 );
 
 module.exports = router;

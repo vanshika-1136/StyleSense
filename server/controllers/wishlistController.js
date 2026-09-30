@@ -13,7 +13,7 @@ __dirname,
 
 const getWishlist = async (req, res) => {
 try {
-const { user_id } = req.params;
+const user_id = req.user.user_id;
 
 
     if (!user_id) {

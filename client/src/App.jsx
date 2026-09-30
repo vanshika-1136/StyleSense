@@ -1,54 +1,74 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from './context/AuthContext';
+import Login from './pages/Login';
+import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import Wishlist from './pages/Wishlist';
+import Cart from './pages/Cart';
 
 import {
   searchProducts,
   recordInteraction,
   getUserInteractions,
+  getRecommendations,
+  recordSearch,
 } from './services/api';
 
 import './index.css';
 
-function App() {
-  const [products, setProducts] = useState([]);
+function ProtectedRoute({ children }) {
+  const { isAuthenticated, loading } = useAuth();
 
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="w-10 h-10 border-4 border-gray-200 border-t-black rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+}
+
+function StyleSenseApp() {
+  const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
+  const hasSearched = useRef(false);
+  const { user, logout } = useAuth();
 
   const [userInteractions, setUserInteractions] = useState([]);
-  const [page, setPage] = useState('wishlist');
+
+  const [page, setPage] = useState(
+    sessionStorage.getItem('stylesense_page') || 'home'
+  );
+  const changePage = (newPage) => {
+    sessionStorage.setItem('stylesense_page', newPage);
+    setPage(newPage);
+  };
+  // GLOBAL SEARCH QUERY
+  const [query, setQuery] = useState('');
 
   // =========================================================
-  // USER / SESSION
+  // USER
   // =========================================================
 
-  // const userId = 'user_0001';
+  const userId = String(user.user_id);
+  const sessionId = 'session_' + userId;
 
-  // const sessionId = 'session_' + userId;
-
-  const getUserId = () => {
-    let userId = localStorage.getItem("stylesense_user_id");
-
-    if (!userId) {
-        userId = "user_" + crypto.randomUUID();
-
-        localStorage.setItem(
-            "stylesense_user_id",
-            userId
-        );
-    }
-
-    return userId;
-};
-
-const userId = getUserId();
- const sessionId = 'session_' + userId;
   // =========================================================
   // LOAD USER INTERACTIONS
   // =========================================================
 
   useEffect(() => {
     const loadUserInteractions = async () => {
+      // Clear previous user's state immediately
+      setUserInteractions([]);
+
       try {
         const result = await getUserInteractions(userId);
 
@@ -59,19 +79,69 @@ const userId = getUserId();
     };
 
     loadUserInteractions();
-  }, []);
+  }, [userId]);
+
+  // =========================================================
+  // LOAD DEFAULT / TRENDING PRODUCTS
+  // =========================================================
+
+  // =========================================================
+  // LOAD DASHBOARD PRODUCTS
+  // New user → Trending
+  // Existing user → Personalized
+  // =========================================================
+
+  useEffect(() => {
+    const loadDashboardProducts = async () => {
+      if (hasSearched.current) {
+        return;
+      }
+
+      try {
+        setLoading(true);
+
+        const data = await getRecommendations(userId);
+
+        // Don't overwrite search results
+        if (hasSearched.current) {
+          return;
+        }
+
+        if (data?.products) {
+          setProducts(data.products);
+        }
+      } catch (error) {
+        console.error('Failed to load dashboard products:', error);
+      } finally {
+        if (!hasSearched.current) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadDashboardProducts();
+  }, [userId]);
 
   // =========================================================
   // SEARCH
   // =========================================================
 
-  const handleSearch = async (query) => {
-    if (!query.trim()) return;
+  const handleSearch = async (searchQuery) => {
+    const trimmedQuery = searchQuery?.trim();
+
+    if (!trimmedQuery) {
+      return;
+    }
+
+    hasSearched.current = true;
+
+    setQuery(trimmedQuery);
+    changePage('home');
+    setProducts([]);
+    setLoading(true);
 
     try {
-      setLoading(true);
-
-      const data = await searchProducts(query, userId);
+      const data = await searchProducts(trimmedQuery, userId);
 
       if (data?.products) {
         setProducts(data.products);
@@ -81,34 +151,35 @@ const userId = getUserId();
     } finally {
       setLoading(false);
     }
-  };
 
+    recordSearch({
+      user_id: userId,
+      query: trimmedQuery,
+    }).catch((error) => {
+      console.error('Failed to record search history:', error);
+    });
+  };
   // =========================================================
-  // RECORD INTERACTION
+  // INTERACTION
   // =========================================================
 
   const handleInteraction = async (product, interactionType, dwellTime = 0) => {
+    console.log('========== APP INTERACTION ==========');
+    console.log('product:', product);
+    console.log('product.id:', product?.id);
+    console.log('interactionType:', interactionType);
+    console.log('dwellTime:', dwellTime);
     try {
-      // -----------------------------------------------
-      // Save interaction to Neon
-      // -----------------------------------------------
-
       await recordInteraction({
         user_id: userId,
-
         product_id: String(product.id),
-
         session_id: sessionId,
-
         interaction_type: interactionType,
-
         dwell_time_ms: dwellTime,
       });
 
-      // -----------------------------------------------
-      // Update React state immediately
-      // -----------------------------------------------
-
+      // Keep local state updated for
+      // wishlist/cart button states
       if (
         interactionType === 'add_to_wishlist' ||
         interactionType === 'remove_from_wishlist' ||
@@ -117,12 +188,9 @@ const userId = getUserId();
       ) {
         setUserInteractions((previous) => [
           ...previous,
-
           {
             product_id: String(product.id),
-
             interaction_type: interactionType,
-
             timestamp: new Date().toISOString(),
           },
         ]);
@@ -138,50 +206,96 @@ const userId = getUserId();
 
   return (
     <>
-      {page === 'home' ? (
+      {/* =====================================================
+          HOME
+      ====================================================== */}
+
+      {page === 'home' && (
         <Dashboard
           products={products}
-
           loading={loading}
-
+          query={query}
+          setQuery={setQuery}
           onSearch={handleSearch}
-
           onInteraction={handleInteraction}
-
           userInteractions={userInteractions}
-          onWishlist={() => setPage('wishlist')}
+          onWishlist={() => changePage('wishlist')}
+          onCart={() => changePage('cart')}
+          onHome={() => changePage('home')}
+          page={page}
         />
-      ) : (
+      )}
+
+      {/* =====================================================
+          WISHLIST
+      ====================================================== */}
+
+      {page === 'wishlist' && (
         <Wishlist
           userId={userId}
           products={products}
           userInteractions={userInteractions}
           onInteraction={handleInteraction}
+
+          query={query}
+          setQuery={setQuery}
+          onSearch={handleSearch}
+
+          onWishlist={() => changePage('wishlist')}
+          onCart={() => changePage('cart')}
+          onHome={() => changePage('home')}
+          page={page}
         />
       )}
 
-      {/* SEARCH LOADING */}
+      {/* =====================================================
+          CART
+      ====================================================== */}
 
-      {loading && (
-        <div
-          className="
-                        fixed
-                        bottom-6
-                        right-6
-                        bg-black
-                        text-white
-                        px-5
-                        py-3
-                        rounded-full
-                        shadow-xl
-                        text-sm
-                        z-50
-                    "
-        >
-          Finding your style...
-        </div>
+      {page === 'cart' && (
+        <Cart
+          userId={userId}
+
+          query={query}
+          setQuery={setQuery}
+          onSearch={handleSearch}
+
+          onInteraction={handleInteraction}
+
+          onWishlist={() => changePage('wishlist')}
+
+          onCart={() => changePage('cart')}
+
+          onHome={() => changePage('home')}
+          page={page}
+        />
       )}
+
+      {/* =====================================================
+          LOADING MESSAGE
+      ====================================================== */}
     </>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+
+        <Route path="/register" element={<Register />} />
+
+        <Route
+          path="/*"
+          element={
+            <ProtectedRoute>
+              <StyleSenseApp />
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   );
 }
 

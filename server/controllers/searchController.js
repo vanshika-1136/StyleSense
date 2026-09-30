@@ -1,6 +1,7 @@
 const { spawn } = require("child_process");
 const path = require("path");
-
+const fs = require("fs");
+const csv = require("csv-parser");
 
 // =====================================================
 // RUN PYTHON
@@ -107,148 +108,288 @@ const runPython = (
 };
 
 
+
 // =====================================================
 // SEARCH
 // =====================================================
 
-const searchProducts = async (
-    req,
-    res
-) => {
+const searchProducts = (req, res) => {
 
-    try {
-
-        const query =
-            req.query.q;
-
-        const userId =
-            req.query.user_id ||
-            null;
+    const {
+        q,
+        user_id,
+    } = req.query;
 
 
-        // =========================================
-        // VALIDATION
-        // =========================================
+    // ============================================
+    // VALIDATE SEARCH
+    // ============================================
 
-        if (
-            !query ||
-            !query.trim()
-        ) {
+    if (!q || !q.trim()) {
 
-            return res.status(400).json({
+        return res.status(400).json({
+            success: false,
+            error: "Search query is required"
+        });
 
-                success: false,
+    }
 
-                error:
-                    "Search query is required"
 
-            });
+    // ============================================
+    // LOG REQUEST
+    // ============================================
+
+    console.log("================================");
+    console.log("Search request");
+
+    console.log("Query:", q);
+    console.log("User:", user_id);
+
+
+
+
+    // ============================================
+    // PYTHON SEARCH ENGINE
+    // ============================================
+
+    const pythonScript = path.join(
+        __dirname,
+        "..",
+        "recomendationSystem",
+        "search_engine.py"
+    );
+
+    console.log(
+        "Python search:",
+        pythonScript
+    );
+
+
+   
+
+
+    // ============================================
+    // RUN PYTHON
+    // ============================================
+
+    const pythonProcess = spawn(
+        "python",
+        [pythonScript]
+    );
+
+    let output = "";
+    let errorOutput = "";
+
+
+    // ============================================
+    // PYTHON STDOUT
+    // ============================================
+
+    pythonProcess.stdout.on(
+        "data",
+        (data) => {
+
+            output += data.toString();
 
         }
+    );
 
 
-        console.log(
-            `Searching for: ${query}`
-        );
+    // ============================================
+    // PYTHON STDERR
+    // ============================================
 
-        console.log(
-            `User: ${userId || "guest"}`
-        );
+    pythonProcess.stderr.on(
+        "data",
+        (data) => {
+
+            errorOutput +=
+                data.toString();
+
+        }
+    );
 
 
-        // =========================================
-        // PYTHON PATH
-        // =========================================
+    // ============================================
+    // SEND DATA TO PYTHON
+    // ============================================
 
-        const pythonScript =
-            path.join(
+    pythonProcess.stdin.write(
+        JSON.stringify({
 
-                __dirname,
+            query: q,
 
-                "..",
+            user_id:
+                user_id || null,
 
-                "recomendationSystem",
 
-                "combined_engine.py"
+        })
+    );
 
+    pythonProcess.stdin.end();
+
+
+    // ============================================
+    // PYTHON FINISHED
+    // ============================================
+
+    pythonProcess.on(
+        "close",
+        (code) => {
+
+            console.log(
+                "Python exit code:",
+                code
             );
 
 
-        console.log(
-            "Python:",
-            pythonScript
-        );
+            if (errorOutput) {
+
+                console.log(
+                    "Python logs:",
+                    errorOutput
+                );
+
+            }
 
 
-        // =========================================
-        // RUN PYTHON
-        // =========================================
+            // ====================================
+            // PYTHON ERROR
+            // ====================================
 
-        const result =
-            await runPython(
+            if (code !== 0) {
 
-                pythonScript,
+                return res.status(500).json({
 
-                {
+                    success: false,
 
-                    query: query,
+                    error:
+                        errorOutput ||
+                        "Search engine failed"
 
-                    user_id: userId,
+                });
 
-                    limit: 20
+            }
 
-                }
 
+            // ====================================
+            // PARSE PYTHON RESPONSE
+            // ====================================
+
+            try {
+
+                const result =
+                    JSON.parse(output);
+
+                return res.json(result);
+
+            } catch (error) {
+
+                console.error(
+                    "Python output:",
+                    output
+                );
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    error:
+                        "Invalid response from search engine"
+
+                });
+
+            }
+
+        }
+    );
+
+
+    // ============================================
+    // PYTHON PROCESS ERROR
+    // ============================================
+
+    pythonProcess.on(
+        "error",
+        (error) => {
+
+            console.error(
+                "Python process error:",
+                error
             );
-
-
-        // =========================================
-        // PYTHON FAILURE
-        // =========================================
-
-        if (!result.success) {
 
             return res.status(500).json({
 
                 success: false,
 
                 error:
-                    result.error ||
-                    "Python recommendation engine failed"
+                    "Failed to start search engine"
 
             });
 
         }
+    );
+
+};
 
 
-        // =========================================
-        // RESPONSE
-        // =========================================
+const getTrendingProducts = async (req, res) => {
+
+    try {
+
+        const PRODUCT_FILE = path.join(
+            __dirname,
+            "..",
+            "recomendationSystem",
+            "stylesense_products_clean.csv"
+        );
+
+        console.log(
+            "Loading trending products from:",
+            PRODUCT_FILE
+        );
+
+        const products = [];
+
+        await new Promise((resolve, reject) => {
+
+            fs.createReadStream(PRODUCT_FILE)
+
+                .pipe(csv())
+
+                .on("data", (row) => {
+
+                    if (products.length < 20) {
+                        products.push(row);
+                    }
+
+                })
+
+                .on("end", resolve)
+
+                .on("error", reject);
+
+        });
+
+        console.log(
+            "Trending products loaded:",
+            products.length
+        );
 
         return res.json({
 
             success: true,
 
-            query:
-                result.query,
+            count: products.length,
 
-            user_id:
-                result.user_id,
-
-            count:
-                result.count,
-
-            products:
-                result.products
+            products
 
         });
 
-    }
-
-    catch (error) {
+    } catch (error) {
 
         console.error(
-            "Search controller error:",
+            "Trending products error:",
             error
         );
 
@@ -256,11 +397,9 @@ const searchProducts = async (
 
             success: false,
 
-            error:
-                "Search failed",
+            error: "Failed to load trending products",
 
-            details:
-                error.message
+            details: error.message
 
         });
 
@@ -268,7 +407,7 @@ const searchProducts = async (
 
 };
 
-
 module.exports = {
-    searchProducts
+    searchProducts,
+    getTrendingProducts
 };

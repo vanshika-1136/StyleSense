@@ -1,9 +1,9 @@
 export const getUserId = () => {
-  let userId = localStorage.getItem('stylesense_user_id');
+  let userId = sessionStorage.getItem('stylesense_user_id');
 
   if (!userId) {
     userId = `user_${Date.now()}`;
-    localStorage.setItem('stylesense_user_id', userId);
+    sessionStorage.setItem('stylesense_user_id', userId);
   }
 
   return userId;
