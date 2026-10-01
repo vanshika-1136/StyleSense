@@ -138,7 +138,7 @@ useEffect(() => {
   // =========================================================
 
 const handleSearch = async (searchQuery) => {
-  e.preventDefault();
+  
   const trimmedQuery = searchQuery?.trim();
 
   if (!trimmedQuery) {
