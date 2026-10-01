@@ -138,6 +138,7 @@ useEffect(() => {
   // =========================================================
 
 const handleSearch = async (searchQuery) => {
+  e.preventDefault();
   const trimmedQuery = searchQuery?.trim();
 
   if (!trimmedQuery) {
@@ -148,7 +149,7 @@ const handleSearch = async (searchQuery) => {
 
   setQuery(trimmedQuery);
   changePage('home');
-  setProducts([]);
+  // setProducts([]);
   setLoading(true);
 
   try {
