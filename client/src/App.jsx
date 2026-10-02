@@ -6,7 +6,7 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import Wishlist from './pages/Wishlist';
 import Cart from './pages/Cart';
-import ProductRoute from './components/PublicRoute'
+import PublicRoute from './components/PublicRoute'
 import {
   searchProducts,
   recordInteraction,
