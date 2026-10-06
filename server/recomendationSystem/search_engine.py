@@ -106,6 +106,10 @@ def prepare_search_data(products):
 # FAST SEARCH
 # ============================================================
 
+# ============================================================
+# FAST SEARCH
+# ============================================================
+
 def search_products(
     query,
     products,
@@ -120,7 +124,6 @@ def search_products(
     if not query:
 
         result = products.head(limit).copy()
-
         result["search_score"] = 0.0
 
         return result
@@ -130,10 +133,87 @@ def search_products(
     if not tokens:
 
         result = products.head(limit).copy()
-
         result["search_score"] = 0.0
 
         return result
+
+    # ========================================================
+    # DETECT EXPLICIT ATTRIBUTES
+    # ========================================================
+
+    detected_colors = []
+    detected_categories = []
+
+    # Get unique values from dataset
+    available_colors = set()
+
+    if "color" in products.columns:
+        available_colors = set(
+            products["color"]
+            .dropna()
+            .astype(str)
+            .map(normalize_text)
+            .unique()
+        )
+
+    available_categories = set()
+
+    if "category" in products.columns:
+        available_categories = set(
+            products["category"]
+            .dropna()
+            .astype(str)
+            .map(normalize_text)
+            .unique()
+        )
+
+    available_subcategories = set()
+
+    if "subcategory" in products.columns:
+        available_subcategories = set(
+            products["subcategory"]
+            .dropna()
+            .astype(str)
+            .map(normalize_text)
+            .unique()
+        )
+
+    # --------------------------------------------------------
+    # Detect colors
+    # --------------------------------------------------------
+
+    for token in tokens:
+
+        for color in available_colors:
+
+            if (
+                token == color
+                or token in color.split()
+            ):
+                detected_colors.append(color)
+
+    # Remove duplicates
+    detected_colors = list(set(detected_colors))
+
+    # --------------------------------------------------------
+    # Detect categories
+    # --------------------------------------------------------
+
+    for token in tokens:
+
+        for category in available_categories:
+
+            if (
+                token == category
+                or token in category.split()
+            ):
+                detected_categories.append(category)
+
+    detected_categories = list(set(detected_categories))
+
+    # ========================================================
+    # BASE SEARCH SCORE
+    # ========================================================
 
     scores = pd.Series(
         0.0,
@@ -241,17 +321,72 @@ def search_products(
             * 3
         )
 
+    # ========================================================
+    # EXPLICIT ATTRIBUTE BOOST
+    # ========================================================
+
+    # If user explicitly mentioned a color,
+    # give matching products a VERY strong boost.
+
+    if detected_colors:
+
+        color_match = pd.Series(
+            False,
+            index=products.index
+        )
+
+        for color in detected_colors:
+
+            color_match |= (
+                products["color"]
+                .str.contains(
+                    color,
+                    regex=False,
+                    na=False
+                )
+            )
+
+        scores += (
+            color_match.astype(float) * 40
+        )
+
     # --------------------------------------------------------
+    # Explicit category boost
+    # --------------------------------------------------------
+
+    if detected_categories:
+
+        category_match = pd.Series(
+            False,
+            index=products.index
+        )
+
+        for category in detected_categories:
+
+            category_match |= (
+                products["category"]
+                .str.contains(
+                    category,
+                    regex=False,
+                    na=False
+                )
+            )
+
+        scores += (
+            category_match.astype(float) * 30
+        )
+
+    # ========================================================
     # ATTACH SCORE
-    # --------------------------------------------------------
+    # ========================================================
 
     result = products.copy()
 
     result["search_score"] = scores
 
-    # --------------------------------------------------------
+    # ========================================================
     # REMOVE NON-MATCHES
-    # --------------------------------------------------------
+    # ========================================================
 
     result = result[
         result["search_score"] > 0
@@ -260,9 +395,9 @@ def search_products(
     if result.empty:
         return result
 
-    # --------------------------------------------------------
+    # ========================================================
     # SORT
-    # --------------------------------------------------------
+    # ========================================================
 
     result = result.sort_values(
         by="search_score",
@@ -271,6 +406,171 @@ def search_products(
     )
 
     return result.head(limit)
+# def search_products(
+#     query,
+#     products,
+#     limit=100
+# ):
+
+#     if products.empty:
+#         return pd.DataFrame()
+
+#     query = query.strip()
+
+#     if not query:
+
+#         result = products.head(limit).copy()
+
+#         result["search_score"] = 0.0
+
+#         return result
+
+#     tokens = tokenize(query)
+
+#     if not tokens:
+
+#         result = products.head(limit).copy()
+
+#         result["search_score"] = 0.0
+
+#         return result
+
+#     scores = pd.Series(
+#         0.0,
+#         index=products.index
+#     )
+
+#     # --------------------------------------------------------
+#     # SEARCH EACH TOKEN
+#     # --------------------------------------------------------
+
+#     for token in tokens:
+
+#         # NAME
+#         name_contains = (
+#             products["name"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#         )
+
+#         scores += (
+#             name_contains.astype(float) * 10
+#         )
+
+#         # Exact word in name
+#         name_exact = products["_name_words"].map(
+#             lambda words: token in words
+#         )
+
+#         scores += (
+#             name_exact.astype(float) * 5
+#         )
+
+#         # CATEGORY
+#         scores += (
+#             products["category"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#             .astype(float)
+#             * 8
+#         )
+
+#         # SUBCATEGORY
+#         scores += (
+#             products["subcategory"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#             .astype(float)
+#             * 7
+#         )
+
+#         # COLOR
+#         scores += (
+#             products["color"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#             .astype(float)
+#             * 7
+#         )
+
+#         # STYLE
+#         scores += (
+#             products["style"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#             .astype(float)
+#             * 5
+#         )
+
+#         # GENDER
+#         scores += (
+#             products["gender"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#             .astype(float)
+#             * 3
+#         )
+
+#         # FIT
+#         scores += (
+#             products["fit"]
+#             .str.contains(
+#                 token,
+#                 regex=False,
+#                 na=False
+#             )
+#             .astype(float)
+#             * 3
+#         )
+
+#     # --------------------------------------------------------
+#     # ATTACH SCORE
+#     # --------------------------------------------------------
+
+#     result = products.copy()
+
+#     result["search_score"] = scores
+
+#     # --------------------------------------------------------
+#     # REMOVE NON-MATCHES
+#     # --------------------------------------------------------
+
+#     result = result[
+#         result["search_score"] > 0
+#     ]
+
+#     if result.empty:
+#         return result
+
+#     # --------------------------------------------------------
+#     # SORT
+#     # --------------------------------------------------------
+
+#     result = result.sort_values(
+#         by="search_score",
+#         ascending=False,
+#         kind="stable"
+#     )
+
+#     return result.head(limit)
 # import pandas as pd
 # import re
 # import sys
