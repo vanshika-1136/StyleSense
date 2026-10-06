@@ -12,6 +12,7 @@ function Dashboard({
   onWishlist,
   onHome,
   onCart,
+  onProductClick,
   page,
 }) {
   const handleSubmit = (e) => {
@@ -205,6 +206,7 @@ function Dashboard({
             products={products}
             onInteraction={onInteraction}
             userInteractions={userInteractions}
+            onProductClick={onProductClick}
           />
         ) : (
           <div

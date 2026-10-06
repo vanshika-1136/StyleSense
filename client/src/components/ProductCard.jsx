@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-function ProductCard({ product, onInteraction, userInteractions = [] }) {
+function ProductCard({ product, onInteraction, userInteractions = [],onProductClick, }) {
   // =========================================================
   // STATE
   // =========================================================
@@ -114,9 +114,11 @@ function ProductCard({ product, onInteraction, userInteractions = [] }) {
   // PRODUCT CLICK
   // =========================================================
 
-  const handleProductClick = () => {
-    onInteraction?.(product, 'click', 0);
-  };
+const handleProductClick = () => {
+  onInteraction?.(product, 'click', 0);
+
+  onProductClick?.(product);
+};
 
   // =========================================================
   // WISHLIST

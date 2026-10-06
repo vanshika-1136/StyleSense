@@ -1,6 +1,6 @@
 import ProductCard from './ProductCard';
 
-function ProductGrid({ products = [], onInteraction, userInteractions = [] }) {
+function ProductGrid({ products = [], onInteraction, userInteractions = [], onProductClick}) {
   return (
     <div
       className="
@@ -17,6 +17,7 @@ function ProductGrid({ products = [], onInteraction, userInteractions = [] }) {
           product={product}
           userInteractions={userInteractions}
           onInteraction={onInteraction}
+          onProductClick={onProductClick}
         />
       ))}
     </div>
